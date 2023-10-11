@@ -7,21 +7,22 @@
 
 -behaviour(gen_server).
 
--export([start_link/0, select_peer/0, peer/1]).
+-export([start_link/2, select_peer/0, peer/1]).
 
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -record(state, {partial_view = [] :: [{pid(), age()}],
-                time = 0 :: age()}).
+                time = 0 :: age(),
+                viewsize = 10 :: pos_integer(),
+                pinitiate = 0.5 :: float(),
+                tref :: timer:tref()}).
 
 -define(SERVER, ?MODULE).
--define(C, 10).
--define(timeout, 1000 + rand:uniform(2000)).
 
 -type age() :: pos_integer().
 
-start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+start_link(ViewSize, PInitiate) ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, {ViewSize, PInitiate}, []).
 
 %% @doc Establish a peering relationship between this node and the
 %% nodes in `Nodes'
@@ -29,41 +30,53 @@ start_link() ->
 peer(Peers) ->
     gen_server:cast(?SERVER, {peer, Peers}).
 
-init([]) ->
-    {ok, #state{}}.
+init({ViewSize, PInitiate}) ->
+    {ok, TRef} = timer:send_interval(1000, tick),
+    {ok, #state{viewsize = ViewSize, pinitiate = PInitiate, tref = TRef}}.
 
 select_peer() ->
     gen_server:call(?SERVER, select_peer).
 
 handle_cast({peer, Nodes}, #state{time = Time} = State) ->
     NewPartialView =
-        select_to_keep(Time, Nodes, State#state.partial_view, ?C),
-    {noreply, State#state{time = Time + 1, partial_view = NewPartialView}, ?timeout};
+        select_to_keep(Time, Nodes, State#state.partial_view, State#state.viewsize),
+    {noreply, State#state{time = Time + 1, partial_view = NewPartialView}};
+handle_cast({offer, From, _Peers}, #state{partial_view = []} = State) ->
+    gen_server:cast(From, rejected),
+    {noreply, State};
 handle_cast({offer, From, Peers},
             #state{time = Time, partial_view = PartialView} = State) ->
-    Send = select_to_send(PartialView, ?C div 2),
+    Send = select_to_send(PartialView, State#state.viewsize div 2),
     send_reply(From, Send),
     NewPartialView =
-        select_to_keep(Time, Peers, State#state.partial_view, ?C),
-    {noreply, State#state{time = Time + 1, partial_view = NewPartialView}, ?timeout};
+        select_to_keep(Time, Peers, State#state.partial_view, State#state.viewsize),
+    {noreply, State#state{time = Time + 1, partial_view = NewPartialView}};
 handle_cast({reply, Peers},
             #state{time = Time, partial_view = PartialView} = State) ->
-    NewPartialView = select_to_keep(Time, Peers, PartialView, ?C),
-    {noreply, State#state{partial_view = NewPartialView}, ?timeout}.
+    NewPartialView = select_to_keep(Time, Peers, PartialView, State#state.viewsize),
+    {noreply, State#state{partial_view = NewPartialView}}.
 
 handle_call(select_peer, _From, State) ->
     Peer = select_peer(State#state.partial_view),
-    {reply, Peer, State, ?timeout}.
+    {reply, Peer, State}.
 
-handle_info(timeout, State) ->
+handle_info(tick, #state{partial_view = []} = State) ->
+    %% Don't do anything if there are no nodes in the partial view.
+    {noreply, State};
+handle_info(tick, State) ->
     %% Trigger the process to initiate an exchange with a peer
-    Send = select_to_send(State#state.partial_view, ?C div 2),
-    Peer = select_peer(State#state.partial_view),
-    send_offer(Peer, [self()|Send]),
-    {noreply, State, ?timeout}.
+    P = rand:uniform(),
+    if P < State#state.pinitiate ->
+            Send = select_to_send(State#state.partial_view, State#state.viewsize div 2),
+            Peer = select_peer(State#state.partial_view),
+            send_offer(Peer, [self()|Send]);
+       true ->
+            ok
+    end,
+    {noreply, State}.
 
 send_offer(Dest, Peers) ->
-    gen_server:cast(Dest, {offer, self(), Peers}).
+    rpc:call(Dest, gen_server, cast, [?SERVER, {offer, self(), Peers}]).
 
 send_reply(Dest, Peers) ->
     gen_server:cast(Dest, {reply, Peers}).
