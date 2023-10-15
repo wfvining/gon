@@ -33,6 +33,11 @@ init({ViewSize, PSwapPSS, PSwapApp}) ->
                     start => {pss, start_link, [ViewSize, PSwapPSS]},
                     restart => permanent,
                     type => worker,
+                    shutdown => 2000},
+                  #{id => overlay,
+                    start => {overlay, start_link, [ViewSize, PSwapApp]},
+                    restart => permanent,
+                    type => worker,
                     shutdown => 2000}],
     {ok, {SupFlags, ChildSpecs}}.
 

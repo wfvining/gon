@@ -56,6 +56,8 @@ handle_cast({reply, Peers},
     NewPartialView = select_to_keep(Time, Peers, PartialView, State#state.viewsize),
     {noreply, State#state{partial_view = NewPartialView}}.
 
+handle_call(select_peer, _From, #state{partial_view = []} = State) ->
+    {reply, empty, State};
 handle_call(select_peer, _From, State) ->
     Peer = select_peer(State#state.partial_view),
     {reply, Peer, State}.
@@ -69,7 +71,7 @@ handle_info(tick, State) ->
     if P < State#state.pinitiate ->
             Send = select_to_send(State#state.partial_view, State#state.viewsize div 2),
             Peer = select_peer(State#state.partial_view),
-            send_offer(Peer, [self()|Send]);
+            send_offer(Peer, [node()|Send]);
        true ->
             ok
     end,
@@ -86,9 +88,9 @@ select_peer(Peers) ->
     element(1, lists:nth(N, Peers)).
 
 select_to_keep(T, NewPeers, PartialView, ViewSize) ->
-    Add = [{Pid, T} || Pid <- NewPeers,
-                       not(lists:keymember(Pid, 1, PartialView)),
-                       Pid =/= self()],
+    Add = [{Peer, T} || Peer <- NewPeers,
+                       not(lists:keymember(Peer, 1, PartialView)),
+                       Peer =/= node()],
     View = lists:keysort(2, Add ++ PartialView),
     if length(View) =< ViewSize ->
             View;
